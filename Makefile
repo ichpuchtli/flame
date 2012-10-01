@@ -115,6 +115,7 @@ THUMB_SOURCE= \
 		$(PERIPH)/aic/aic.c \
 		$(PERIPH)/pio/pio.c \
 		$(PERIPH)/pmc/pmc.c \
+		$(PERIPH)/spi/spi.c \
 		$(PERIPH)/pwmc/pwmc.c \
 		$(PERIPH)/pit/pit.c \
 		$(UTILITY)/led.c \
@@ -126,6 +127,8 @@ THUMB_SOURCE= \
 		$(UIP_COMMON_DIR)/uip/uip.c \
 		$(NETDUINO_DIR)/uip/uIP_Task.c \
 		$(NETDUINO_DIR)/uip/SAM7_EMAC.c \
+		$(NETDUINO_DIR)/SDCard/ff.c \
+		$(NETDUINO_DIR)/SDCard/mmc_spi.c \
 		./tuioclient.c
 
 ARM_SOURCE= \
@@ -149,13 +152,13 @@ $(PROGNAME).hex : $(PROGNAME).elf
 	$(OBJCOPY) $(PROGNAME).elf -O ihex $(PROGNAME).hex
 
 $(PROGNAME).elf : $(THUMB_OBJS) $(ARM_OBJS) $(NETDUINO_DIR)/boot.s Makefile
-	@$(CC) $(CFLAGS) $(ARM_OBJS) $(THUMB_OBJS) $(LIBS) $(NETDUINO_DIR)/boot.s $(LINKER_FLAGS) 
+	$(CC) $(CFLAGS) $(ARM_OBJS) $(THUMB_OBJS) $(LIBS) $(NETDUINO_DIR)/boot.s $(LINKER_FLAGS) 
 
 $(THUMB_OBJS) : %.o : %.c Makefile FreeRTOSConfig.h
-	@$(CC) -c $(CFLAGS) -mthumb $< -o $@
+	$(CC) -c $(CFLAGS) -mthumb $< -o $@
 
 $(ARM_OBJS) : %.o : %.c Makefile FreeRTOSConfig.h
-	@$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) -c $(CFLAGS) $< -o $@
 
 clean :
 	rm *.elf

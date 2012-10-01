@@ -98,7 +98,8 @@ void tuioclient_appcall(void)
 		motion_acceleration 	= *(float *)&tuio_attribute[8]; 
 		rotation_acceleration 	= *(float *)&tuio_attribute[9];
 
-                /* xQueueSend(xQueueTuioData, (void*) tuio_attribute ,10); */
+                /* Don't block if full */
+                xQueueSend(xQueueTuioData, (void*) tuio_attribute ,1);
 
 #ifdef DEBUG
                 debug_printf("s:%d i:%d x:%d y:%d a:%d ", session_id, class_id, (int)(position_x*100.0f), (int)(position_y*100.0f), (int)(angle_a*100.0f)); 

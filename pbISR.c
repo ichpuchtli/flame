@@ -31,6 +31,8 @@ void vPBISR_Handler( void ) __attribute__((noinline));
 
 static xSemaphoreHandle xPBSemaphore;		//Pushbutton semaphore
 
+static portTickType xLastTx = 0;
+
 /*-----------------------------------------------------------*/
 //Set semaphore to use.
 void vPassPBSemaphore( xSemaphoreHandle xSemaphore )
@@ -51,8 +53,14 @@ void vPBISR_Handler( void ) {
 	status = AT91C_BASE_PIOA->PIO_ISR;
         status &= AT91C_BASE_PIOA->PIO_IMR;
 	
-	//Add your pusbbutton ISR code to trigger a semaphore.
-        xSemaphoreGiveFromISR(xPBSemaphore, &xHigherPriorityTaskWoken);
+        /* The idle hook simply prints the idle tick count */
+        if( ( xTaskGetTickCount() - xLastTx ) > ( 1000 / portTICK_RATE_MS ) )
+        {
+            xLastTx = xTaskGetTickCount();
+
+            //Add your pusbbutton ISR code to trigger a semaphore.
+            xSemaphoreGiveFromISR(xPBSemaphore, &xHigherPriorityTaskWoken);
+        }
 
 	//Clear AIC flags
   	AT91C_BASE_AIC->AIC_EOICR = 0;
