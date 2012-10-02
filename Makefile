@@ -58,6 +58,7 @@ DEMO_INCLUDE_DIR=../source/freeRTOS/Common/include
 UIP_COMMON_DIR=../source/netduinoplus/uip/uip
 AT91LIB = ../source/at91lib
 NETDUINO_DIR = ../source/netduinoplus
+CLI_SOURCE_DIR=../source/freeRTOS/freeRTOS_CLI
 UTILITY = $(AT91LIB)/utility
 PERIPH = $(AT91LIB)/peripherals
 PROGNAME = main
@@ -87,6 +88,7 @@ CFLAGS= $(DEBUG) \
 		-I $(NETDUINO_DIR)/SDCard \
 		-I$(AT91LIB)/peripherals \
 		-I$(AT91LIB) \
+		-I $(CLI_SOURCE_DIR) \
 		-D SAM7_GCC \
 		-D THUMB_INTERWORK \
 		-mcpu=arm7tdmi \
@@ -129,6 +131,7 @@ THUMB_SOURCE= \
 		$(NETDUINO_DIR)/uip/SAM7_EMAC.c \
 		$(NETDUINO_DIR)/SDCard/ff.c \
 		$(NETDUINO_DIR)/SDCard/mmc_spi.c \
+		$(CLI_SOURCE_DIR)/FreeRTOS_CLI.c \
 		./tuioclient.c
 
 ARM_SOURCE= \

@@ -20,6 +20,7 @@
 #include "QPeek.h"
 #include "dynamic.h"
 #include "debug_printf.h"
+#include "FreeRTOS_CLI.h"
 
 #include <aic/aic.h>
 #include <pio/pio.h>
@@ -36,13 +37,15 @@
 #define mainUSB_PRI               ( tskIDLE_PRIORITY + 1 )
 #define mainUIP_PRI               ( tskIDLE_PRIORITY + 1 )
 #define SERVO_PRI                 ( tskIDLE_PRIORITY + 1 )
-#define PBTASK_PRI                 ( tskIDLE_PRIORITY + 1 )
+#define PBTASK_PRI                ( tskIDLE_PRIORITY + 1 )
+#define CLI_PRI                   ( tskIDLE_PRIORITY + 1 )
 
 /* Stack Sizes */
 #define mainUSB_STACK             ( 200 )
 #define mainUIP_STACK             ( 200 )
 #define SERVO_STACK               ( 400 )
-#define PBTASK_STACK                  ( 200 )
+#define PBTASK_STACK              ( 200 )
+#define CLI_STACK                 ( configMINIMAL_STACK_SIZE * 3 )
 
 /* Servo Constants */
 #define CHANNEL_PWM_SERVO1                  2
@@ -78,6 +81,8 @@
 
 #define RESET_CTRL { 1 << 30U, AT91C_BASE_PIOA, AT91C_ID_PIOA, PIO_OUTPUT_1,0}
 
+//#define CLI_CMD(N) static portBASE_TYPE N(int8_t
+//
 void vPBISR_Handler( void ) __attribute__((naked));
 void vPBISR_Wrapper( void ) __attribute__((naked));
 
@@ -85,9 +90,56 @@ void prvSetupHardware( void );
 void vApplicationIdleHook( void );
 void vConfigurePWM(void);
 
+/* Command functions used for CLI commands */
+static portBASE_TYPE prvLaserCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString );
+
+static portBASE_TYPE prvTailCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString );
+
+static portBASE_TYPE prvListCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString );
+
+static portBASE_TYPE prvTaskUsageCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString );
+
+
+/* Structure that defines the "echo" command line command. */
+static const xCommandLineInput xLaserCMD =
+{
+	( char * ) "laser",
+	( char * ) "laser on/off: Turn the laser on or off.\r\n",
+	prvLaserCommand,
+	1
+};
+
+/* Structure that defines the "test" command line command. */
+static const xCommandLineInput xListCMD =
+{
+	( char * ) "ls",
+	( char * ) "ls: List the directory contents of the uSD card.\r\n",
+	prvListCommand,
+	0
+};
+
+/* Structure that defines the "test" command line command. */
+static const xCommandLineInput xTailCMD =
+{
+	( char * ) "tail",
+	( char * ) "tail: Display the last 10 lines of a file on the uSD card \r\n",
+	prvTailCommand,
+	0
+};
+
+/* Structure that defines the "test" command line command. */
+static const xCommandLineInput xTaskUsageCMD =
+{
+	( char * ) "task_usage",
+	( char * ) "task_usage: List the current number of tasks running\r\n",
+	prvTaskUsageCommand,
+	0
+};
+
 /* Task Prototypes */
 void vServoTask(void* pvParameters);
 void vPBTask(void* pvParameters);
+void vCLI_ReceiveTask(void *pvParameters);
 
 static const Pin PIN_SET[] = {
     PIN_PUSHBUTTON_1,
@@ -109,50 +161,13 @@ xSemaphoreHandle xPBSemaphore;
 /* Tuio Data Queue */
 xQueueHandle xQueueTuioData;
 
-void vLogOpen( void ) {
-
-    FRESULT error;         /* Result code */
-    portCHAR pcLogName[14];
-    unsigned portCHAR ucVersion = 1;
-
-    f_mount(0, &Fatfs);		/* Register volume work area (never fails) */
-
-    for ( ; ; ) {
-
-        sprintf(pcLogName, "6342_V%d.TXT", ucVersion++); 
-
-        /* returns FR_EXIST if file already exists */ 
-        error = f_open(&Fil, pcLogName, FA_WRITE | FA_CREATE_NEW);
-        
-        if( error == 0 ) break;
-
-    }
-
-    vLogSync();
-}
-
-DWORD get_fattime (void)
-{
-	return	  ((DWORD)(2012 - 1980) << 25)	/* Year = 2012 */
-			| ((DWORD)1 << 21)	/* Month = 1 */
-			| ((DWORD)1 << 16)	/* Day_m = 1*/
-			| ((DWORD)0 << 11)	/* Hour = 0 */
-			| ((DWORD)0 << 5)	/* Min = 0 */
-			| ((DWORD)0 >> 1);	/* Sec = 0 */
-}
-
 int main( void )
 {
 
     /* Setup Data Structures */
-
     /* Incoming TUIO Data Queue */
     xQueueTuioData =  xQueueCreate(1, sizeof(unsigned int) * 10);
-
-    /* Create binary semaphore  */  
     vSemaphoreCreateBinary( xPBSemaphore );
-
-    /* Setup Log File for writing */
     vLogOpen();
     
     /* Hardware Setup */
@@ -169,6 +184,12 @@ int main( void )
     vStartQueuePeekTasks();   
     vStartDynamicPriorityTasks();
 
+    /* Register CLI Commands */
+    FreeRTOS_CLIRegisterCommand(&xLaserCMD);
+    FreeRTOS_CLIRegisterCommand(&xTailCMD);
+    FreeRTOS_CLIRegisterCommand(&xListCMD);
+    FreeRTOS_CLIRegisterCommand(&xTaskUsageCMD);
+
     /* User Tasks */
     // Start the UIP stack task (netduinoplus/uip/uIP_Task.c)
     xTaskCreate(vuIP_Task, (char * ) "uIP_Task", mainUIP_STACK, NULL, mainUIP_PRI, NULL);
@@ -178,6 +199,8 @@ int main( void )
 
     // Start External Interrupt Dispatcher Task
     xTaskCreate(vPBTask, (char * ) "PushButton", PBTASK_STACK, NULL, PBTASK_PRI, NULL);
+
+    xTaskCreate( vCLI_ReceiveTask, "USBCLI", CLI_STACK, NULL, CLI_PRI, NULL );
 
     vTaskStartScheduler();
 
@@ -241,25 +264,18 @@ void vServoTask(void* pvParameters){
 /* Pushbutton Input Task */
 void vPBTask(void *pvParameters) {
 
-    //DO NOT USE PIO_InitializeInterrupts, PIO_ConfigureIt or PIO_EnableIt.
-
     int i;
-
     portENTER_CRITICAL();
-
     //Call vPassPBSemaphore (pbISR.c)
     vPassPBSemaphore(xPBSemaphore);
-
     //Setup the PIO interrupt and set ISR to point to PB ISR Wrapper.
     AT91C_BASE_PMC->PMC_PCER = 1 << AT91C_ID_PIOA;
     AT91C_BASE_PIOA->PIO_ISR; 
     AT91C_BASE_PIOA->PIO_IDR = 0xFFFFFFFF;
     AIC_ConfigureIT(AT91C_ID_PIOA, AT91C_AIC_PRIOR_LOWEST, vPBISR_Wrapper);
-
     //Manually set your PIO IER register
     AT91C_BASE_PIOA->PIO_IER = PIN_SET[0].mask;
     AIC_EnableIT(AT91C_ID_PIOA);
-
     portEXIT_CRITICAL();
 
     for ( ; ; ) {
@@ -280,6 +296,156 @@ void vPBTask(void *pvParameters) {
 
         vTaskDelay(100);
     }
+}
+/*-----------------------------------------------------------*/
+/* CLI Echo Function */
+static portBASE_TYPE prvTaskUsageCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString ) {
+	
+	long lParam_len; 
+	const char *cCmd_string;
+
+	//Get parameters from command string
+	cCmd_string = FreeRTOS_CLIGetParameter(pcCommandString, 1, &lParam_len);
+
+	//Write command echo output string to write buffer.
+	xWriteBufferLen = sprintf(pcWriteBuffer, "\n\r%s\n\r", cCmd_string);
+	
+	return pdTRUE;
+}
+
+/*-----------------------------------------------------------*/
+/* CLI Test Function */
+static portBASE_TYPE prvTailCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString ) {
+ 
+	xWriteBufferLen = sprintf(pcWriteBuffer, "\n\rTested..\n\r");
+	
+	return pdTRUE;
+}
+
+/*-----------------------------------------------------------*/
+/* CLI Test Function */
+static portBASE_TYPE prvListCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString ) {
+ 
+	xWriteBufferLen = sprintf(pcWriteBuffer, "\n\rTested..\n\r");
+	
+	return pdTRUE;
+}
+
+/* CLI Test Function */
+static portBASE_TYPE prvLaserCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString ) {
+ 
+        long lParamLen; 
+	const char* pcCmdString;
+
+	//Get parameters from command string
+	pcCmdString = FreeRTOS_CLIGetParameter(pcCommandString, 1, &lParamLen);
+
+        if ( strcmp(pcCmdString, "on") == 0 ){
+            // Turn Laser on
+            PIO_Set(pPinLaser);
+        }else{
+            // Turn Laser off
+            PIO_Clear(pPinLaser);
+        }
+	
+	xWriteBufferLen = sprintf(pcWriteBuffer, "\r\nLaser [%s]\r\n", pcCmdString);
+
+	return pdTRUE;
+}
+/*-----------------------------------------------------------*/
+/* USB CLI receive task */
+void vCLI_ReceiveTask(void *pvParameters) {
+
+    char cRxedChar;
+    char cInputString[20];
+    char cInputIndex = 0;
+    int8_t *pcOutputString;
+    portBASE_TYPE xReturned;
+
+    //Initialise pointer to CLI output buffer.
+    memset(cInputString, 0, sizeof(cInputString));
+    pcOutputString = FreeRTOS_CLIGetOutputBuffer();
+
+    for (;;) {
+
+        //Receive character from USB receive
+        cRxedChar = ucUSBReadByte();
+
+        if ( (cRxedChar != 0) && (cRxedChar != 5)) {
+
+            //reflect byte
+            vUSBSendByte(cRxedChar);
+
+            //Process only if return is received.
+            if (cRxedChar == '\r') {
+
+                //Put null character in command input string.
+                cInputString[cInputIndex] = '\0';
+
+                //Process command input string.
+                xReturned = FreeRTOS_CLIProcessCommand( cInputString, pcOutputString, configCOMMAND_INT_MAX_OUTPUT_SIZE );
+
+                memset(cInputString, 0, sizeof(cInputString));
+                cInputIndex = 0;
+                
+                //Display CLI output string
+                debug_printf("%s\r\n",pcOutputString);
+        
+            } else if( cRxedChar == '\b' ) { 
+
+                // Backspace was pressed.  Erase the last character in the
+                //string - if any.
+                if( cInputIndex > 0 ) {
+                        cInputIndex--;
+                        cInputString[ cInputIndex ] = '\0';
+                }
+
+            } else {
+                // A character was entered.  Add it to the string
+                // entered so far.  When a \n is entered the complete
+                // string will be passed to the command interpreter.
+                if( cInputIndex < 20 ) {
+                        cInputString[ cInputIndex ] = cRxedChar;
+                        cInputIndex++;
+                }
+
+            }
+        } 
+
+        vTaskDelay(50);
+    }
+}
+
+void vLogOpen( void ) {
+
+    FRESULT error;         /* Result code */
+    portCHAR pcLogName[14];
+    unsigned portCHAR ucVersion = 1;
+
+    f_mount(0, &Fatfs);		/* Register volume work area (never fails) */
+
+    for ( ; ; ) {
+
+        sprintf(pcLogName, "6342_V%d.TXT", ucVersion++); 
+
+        /* returns FR_EXIST if file already exists */ 
+        error = f_open(&Fil, pcLogName, FA_WRITE | FA_CREATE_NEW);
+        
+        if( error == 0 ) break;
+
+    }
+
+    vLogSync();
+}
+
+DWORD get_fattime (void)
+{
+	return	  ((DWORD)(2012 - 1980) << 25)	/* Year = 2012 */
+			| ((DWORD)1 << 21)	/* Month = 1 */
+			| ((DWORD)1 << 16)	/* Day_m = 1*/
+			| ((DWORD)0 << 11)	/* Hour = 0 */
+			| ((DWORD)0 << 5)	/* Min = 0 */
+			| ((DWORD)0 >> 1);	/* Sec = 0 */
 }
 
 /*-----------------------------------------------------------*/
@@ -349,3 +515,5 @@ void vConfigurePWM(void)
     PWMC_EnableChannel(CHANNEL_PWM_SERVO2);
 
 }
+
+
