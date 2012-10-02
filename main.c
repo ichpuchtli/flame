@@ -31,11 +31,12 @@
 #define mainBLOCK_Q_PRI           ( tskIDLE_PRIORITY + 1 )
 #define mainFLASH_PRI             ( tskIDLE_PRIORITY + 1 )
 #define mainGEN_QUEUE_PRI         ( tskIDLE_PRIORITY ) 
-#define mainUSB_PRI               ( tskIDLE_PRIORITY + 1 )
+#define mainUSB_PRI               ( tskIDLE_PRIORITY + 2 )
 #define mainUIP_PRI               ( tskIDLE_PRIORITY + 1 )
 #define SERVO_PRI                 ( tskIDLE_PRIORITY + 1 )
 #define PBTASK_PRI                ( tskIDLE_PRIORITY + 1 )
 #define CLI_PRI                   ( tskIDLE_PRIORITY + 1 )
+#define REPLAY_PRI                ( tskIDLE_PRIORITY + 1 )
 
 /* Stack Sizes */
 #define mainUSB_STACK             ( 256 )
@@ -43,6 +44,7 @@
 #define SERVO_STACK               ( 400 )
 #define PBTASK_STACK              ( 256 )
 #define CLI_STACK                 ( 256 )
+#define REPLAY_STACK              ( 256 )
 
 /* Servo Constants */
 #define CHANNEL_PWM_SERVO1                  2
@@ -55,7 +57,7 @@
 #define MIN_DUTY_CYCLE                      0
 
 
-#define xLogLineSize (46)
+#define xLogLineSize (30)
 #define xMainBuffSize (256L)
 #define pPinLaser (&PIN_SET[3])
 #define RESET_CTRL { 1 << 30U, AT91C_BASE_PIOA, AT91C_ID_PIOA, PIO_OUTPUT_1,0}
@@ -94,11 +96,21 @@ void vLogOpen(void);
 void vServoTask(void* pvParameters);
 void vPBTask(void* pvParameters);
 void vCLI_ReceiveTask(void *pvParameters);
+void vReplayTask(void *pvParameters);
 
 static portBASE_TYPE prvLaserCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr );
 static portBASE_TYPE prvTailCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr );
 static portBASE_TYPE prvListCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr );
 static portBASE_TYPE prvUsageCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr );
+static portBASE_TYPE prvReplayCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr );
+
+static const xCommandLineInput xReplayCMD =
+{
+	( char * ) "replay",
+	( char * ) "replay: play back pan and tilt movements.\r\n",
+	prvReplayCMD,
+	0
+};
 
 static const xCommandLineInput xLaserCMD =
 {
@@ -107,6 +119,7 @@ static const xCommandLineInput xLaserCMD =
 	prvLaserCMD,
 	1
 };
+
 
 static const xCommandLineInput xListCMD =
 {
@@ -148,6 +161,8 @@ static portCHAR pcMainBuff[xMainBuffSize];
 
 xSemaphoreHandle xPBSemaphore;
 xQueueHandle xQueueTuioData;
+xTaskHandle xServoTask;
+xTaskHandle xReplayTask = NULL;
 
 int main( void )
 {
@@ -177,19 +192,84 @@ int main( void )
     FreeRTOS_CLIRegisterCommand(&xTailCMD);
     FreeRTOS_CLIRegisterCommand(&xListCMD);
     FreeRTOS_CLIRegisterCommand(&xTaskUsageCMD);
+    FreeRTOS_CLIRegisterCommand(&xReplayCMD);
 
     /* User Tasks */
     xTaskCreate(vuIP_Task, (char * ) "uIP_Task", mainUIP_STACK, NULL, mainUIP_PRI, NULL);
 
-    xTaskCreate(vServoTask, (char * ) "Servo_Task", SERVO_STACK, NULL, SERVO_PRI, NULL);
+    xTaskCreate(vServoTask, (char * ) "Servo", SERVO_STACK, NULL, SERVO_PRI, &xServoTask);
 
-    xTaskCreate(vPBTask, (char * ) "PB_Task", PBTASK_STACK, NULL, PBTASK_PRI, NULL);
+    xTaskCreate(vPBTask, (char * ) "PB", PBTASK_STACK, NULL, PBTASK_PRI, NULL);
 
-    xTaskCreate(vCLI_ReceiveTask, "CLI_Task", CLI_STACK, NULL, CLI_PRI, NULL );
+    xTaskCreate(vCLI_ReceiveTask, "CLI", CLI_STACK, NULL, CLI_PRI, NULL );
+
+    xTaskCreate(vReplayTask, "Replay", REPLAY_STACK, NULL, REPLAY_PRI, &xReplayTask );
+    
+    vTaskSuspend( xReplayTask );
+
 
     vTaskStartScheduler();
 
     return 0;
+}
+
+void vReplayTask(void* pvParameters){
+
+    FRESULT rc;				/* Result code */
+    FILINFO fno;			/* File information object */
+    unsigned portBASE_TYPE xBytesRead, xLastTime, xNewTime, xPan, xTilt;
+
+    static portCHAR pcLineBuff[xLogLineSize+1];
+   
+    (void) f_lseek(&Fil, 0 /* Start of File */ );
+
+    xLastTime = 0;
+
+    for ( ; ; ) {
+
+        for ( ; ; ) {
+
+            (void) f_read(&Fil, pcLineBuff, xLogLineSize, (UINT*) &xBytesRead);
+
+            if( xBytesRead < xLogLineSize )
+                break;
+
+            pcLineBuff[2] = '\0';  
+            pcLineBuff[5] = '\0';  
+            pcLineBuff[8] = '\0';  
+
+            xNewTime =  atol(pcLineBuff) * 60 * 60 + atol(pcLineBuff + 3) * 60 + atol(pcLineBuff + 6);
+
+            vTaskDelay( xNewTime - xLastTime );
+
+            xLastTime = xNewTime;
+           
+            pcLineBuff[22] = '\0';  
+            pcLineBuff[27] = '\0';  
+             
+            xPan = atol(pcLineBuff + 19);
+            xTilt = atol(pcLineBuff + 24);
+
+            vImposeServoLimits( xPan, xTilt );
+
+            debug_printf("[vReplayTask] %3dp %3dt\r\n", xPan, xTilt);
+
+            PWMC_SetDutyCycle(CHANNEL_PWM_SERVO1, xPan);
+            PWMC_SetDutyCycle(CHANNEL_PWM_SERVO2, xTilt);
+
+            vTaskDelay(100);
+
+        }
+
+        debug_printf("Resuming Servo Task...\r\n");
+        vTaskResume( xServoTask );
+
+        vTaskDelay(100);
+
+        debug_printf("Suspendig Replay Task...\r\n");
+        vTaskSuspend( xReplayTask );
+
+    }
 }
 
 void vServoTask(void* pvParameters){
@@ -235,7 +315,7 @@ void vServoTask(void* pvParameters){
 
             vImposeServoLimits( sPan, sTilt );
 
-            vLogPrintf("[vServoTask] %2dx, %2dy, %3dp, %3dt\r\n", sPosX, sPosY, sPan, sTilt);
+            vLogPrintf("%2dx %2dy %3dp %3dt\r\n", sPosX, sPosY, sPan, sTilt);
         
             debug_printf("[vServoTask] %2dx, %2dy, %3dp, %3dt\r\n", sPosX, sPosY, sPan, sTilt);
 
@@ -391,6 +471,21 @@ static portBASE_TYPE prvLaserCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *
 
     return pdFALSE;
 }
+
+static portBASE_TYPE prvReplayCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr ){
+
+    vUSBSendByte('\r');
+    vUSBSendByte('\n');
+
+    //debug_printf("Suspendig Servo Task...\r\n");
+    vTaskSuspend( xServoTask );
+
+    //debug_printf("Resuming Replay Task...\r\n");
+    vTaskResume( xReplayTask );
+
+    return pdFALSE;
+}
+
 
 void vCLI_ReceiveTask(void *pvParameters) {
 
