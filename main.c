@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-/* Scheduler includes. */
 #include "FreeRTOS.h"
 #include "task.h"
 #include "board.h"
@@ -10,7 +9,6 @@
 #include "queue.h"
 #include "ff.h"
 
-/* application includes. */
 #include "uip.h"
 #include "USB-CDC.h"
 #include "uIP_Task.h"
@@ -28,7 +26,6 @@
 #include <pwmc/pwmc.h>
 #include <utility/led.h>
 #include <utility/trace.h>
-/*-----------------------------------------------------------*/
 
 /* Task Priorities */
 #define mainBLOCK_Q_PRI           ( tskIDLE_PRIORITY + 1 )
@@ -41,11 +38,11 @@
 #define CLI_PRI                   ( tskIDLE_PRIORITY + 1 )
 
 /* Stack Sizes */
-#define mainUSB_STACK             ( 200 )
-#define mainUIP_STACK             ( 200 )
+#define mainUSB_STACK             ( 256 )
+#define mainUIP_STACK             ( 256 )
 #define SERVO_STACK               ( 400 )
-#define PBTASK_STACK              ( 200 )
-#define CLI_STACK                 ( configMINIMAL_STACK_SIZE * 3 )
+#define PBTASK_STACK              ( 256 )
+#define CLI_STACK                 ( 256 )
 
 /* Servo Constants */
 #define CHANNEL_PWM_SERVO1                  2
@@ -57,6 +54,14 @@
 #define MAX_DUTY_CYCLE                      100
 #define MIN_DUTY_CYCLE                      0
 
+
+#define xLogLineSize (46)
+#define xMainBuffSize (256L)
+#define pPinLaser (&PIN_SET[3])
+#define RESET_CTRL { 1 << 30U, AT91C_BASE_PIOA, AT91C_ID_PIOA, PIO_OUTPUT_1,0}
+
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+
 /* Imposes the maximum and minimum duty cycle rated for the servo's */ 
 #define vImposeServoLimits(PAN,TILT)                \
     do {                                            \
@@ -66,23 +71,16 @@
     if(TILT < MIN_DEGREES) TILT = MIN_DEGREES;      \
     }while(0)
 
-#define vLogPrintf(...) do {                                                \
-        portTickType xSecs, xMins, xHours;                                  \
-        xSecs = xTaskGetTickCount()/1000;                                   \
-        xMins = xSecs/60;                                                   \
-        xHours = xMins/60;                                                  \
-        f_printf(&Fil, "%d:%d:%d - ", xHours, xMins % 60, xSecs % 60);      \
-        f_printf(&Fil, __VA_ARGS__);                                        \
+#define vLogPrintf(...) do {                                                   \
+        portTickType xSecs, xMins, xHours;                                     \
+        xSecs = xTaskGetTickCount()/1000;                                      \
+        xMins = xSecs/60;                                                      \
+        xHours = xMins/60;                                                     \
+        f_printf(&Fil, "%2d:%2d:%2d - ", xHours, xMins % 60, xSecs % 60);      \
+        f_printf(&Fil, __VA_ARGS__);                                           \
     } while(0)
 
-#define vLogSync() f_sync(&Fil)
-#define pPinLaser (&PIN_SET[3])
-#define pPinLED0 (&PIN_SET[4])
 
-#define RESET_CTRL { 1 << 30U, AT91C_BASE_PIOA, AT91C_ID_PIOA, PIO_OUTPUT_1,0}
-
-//#define CLI_CMD(N) static portBASE_TYPE N(int8_t
-//
 void vPBISR_Handler( void ) __attribute__((naked));
 void vPBISR_Wrapper( void ) __attribute__((naked));
 
@@ -90,56 +88,49 @@ void prvSetupHardware( void );
 void vApplicationIdleHook( void );
 void vConfigurePWM(void);
 
-/* Command functions used for CLI commands */
-static portBASE_TYPE prvLaserCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString );
-
-static portBASE_TYPE prvTailCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString );
-
-static portBASE_TYPE prvListCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString );
-
-static portBASE_TYPE prvTaskUsageCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString );
-
-
-/* Structure that defines the "echo" command line command. */
-static const xCommandLineInput xLaserCMD =
-{
-	( char * ) "laser",
-	( char * ) "laser on/off: Turn the laser on or off.\r\n",
-	prvLaserCommand,
-	1
-};
-
-/* Structure that defines the "test" command line command. */
-static const xCommandLineInput xListCMD =
-{
-	( char * ) "ls",
-	( char * ) "ls: List the directory contents of the uSD card.\r\n",
-	prvListCommand,
-	0
-};
-
-/* Structure that defines the "test" command line command. */
-static const xCommandLineInput xTailCMD =
-{
-	( char * ) "tail",
-	( char * ) "tail: Display the last 10 lines of a file on the uSD card \r\n",
-	prvTailCommand,
-	0
-};
-
-/* Structure that defines the "test" command line command. */
-static const xCommandLineInput xTaskUsageCMD =
-{
-	( char * ) "task_usage",
-	( char * ) "task_usage: List the current number of tasks running\r\n",
-	prvTaskUsageCommand,
-	0
-};
+void vLogOpen(void);
 
 /* Task Prototypes */
 void vServoTask(void* pvParameters);
 void vPBTask(void* pvParameters);
 void vCLI_ReceiveTask(void *pvParameters);
+
+static portBASE_TYPE prvLaserCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr );
+static portBASE_TYPE prvTailCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr );
+static portBASE_TYPE prvListCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr );
+static portBASE_TYPE prvUsageCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr );
+
+static const xCommandLineInput xLaserCMD =
+{
+	( char * ) "laser",
+	( char * ) "laser on/off: Turn the laser on or off.\r\n",
+	prvLaserCMD,
+	1
+};
+
+static const xCommandLineInput xListCMD =
+{
+	( char * ) "ls",
+	( char * ) "ls: List the directory contents of the uSD card.\r\n",
+	prvListCMD,
+	0
+};
+
+static const xCommandLineInput xTailCMD =
+{
+	( char * ) "tail",
+	( char * ) "tail: Display the last 10 lines of a file on the uSD card \r\n",
+	prvTailCMD,
+	0
+};
+
+static const xCommandLineInput xTaskUsageCMD =
+{
+	( char * ) "task_usage",
+	( char * ) "task_usage: List the current number of tasks running\r\n",
+	prvUsageCMD,
+	0
+};
 
 static const Pin PIN_SET[] = {
     PIN_PUSHBUTTON_1,
@@ -149,25 +140,22 @@ static const Pin PIN_SET[] = {
     RESET_CTRL,
 };
 
-/* SD Card / File System stuff */
-
 static FATFS Fatfs;    /* File system object */
 static FIL Fil;        /* File object */
-static BYTE Buff[128]; /* File read buffer */
 
-/* PushButton Semaphore */
+
+static portCHAR pcMainBuff[xMainBuffSize]; 
+
 xSemaphoreHandle xPBSemaphore;
-
-/* Tuio Data Queue */
 xQueueHandle xQueueTuioData;
 
 int main( void )
 {
 
     /* Setup Data Structures */
-    /* Incoming TUIO Data Queue */
     xQueueTuioData =  xQueueCreate(1, sizeof(unsigned int) * 10);
     vSemaphoreCreateBinary( xPBSemaphore );
+    (void) xSemaphoreTake( xPBSemaphore, 10 );
     vLogOpen();
     
     /* Hardware Setup */
@@ -191,16 +179,13 @@ int main( void )
     FreeRTOS_CLIRegisterCommand(&xTaskUsageCMD);
 
     /* User Tasks */
-    // Start the UIP stack task (netduinoplus/uip/uIP_Task.c)
     xTaskCreate(vuIP_Task, (char * ) "uIP_Task", mainUIP_STACK, NULL, mainUIP_PRI, NULL);
 
-    // Start Servo Tracking Task
-    xTaskCreate(vServoTask, (char * ) "Servo", SERVO_STACK, NULL, SERVO_PRI, NULL);
+    xTaskCreate(vServoTask, (char * ) "Servo_Task", SERVO_STACK, NULL, SERVO_PRI, NULL);
 
-    // Start External Interrupt Dispatcher Task
-    xTaskCreate(vPBTask, (char * ) "PushButton", PBTASK_STACK, NULL, PBTASK_PRI, NULL);
+    xTaskCreate(vPBTask, (char * ) "PB_Task", PBTASK_STACK, NULL, PBTASK_PRI, NULL);
 
-    xTaskCreate( vCLI_ReceiveTask, "USBCLI", CLI_STACK, NULL, CLI_PRI, NULL );
+    xTaskCreate(vCLI_ReceiveTask, "CLI_Task", CLI_STACK, NULL, CLI_PRI, NULL );
 
     vTaskStartScheduler();
 
@@ -209,7 +194,7 @@ int main( void )
 
 void vServoTask(void* pvParameters){
     
-    unsigned int pxTuioData[10]; 
+    unsigned portBASE_TYPE puxTuioData[10]; 
 
     portSHORT sPan, sTilt, sPosX, sPosY;
     portFLOAT fPosX, fPosY;
@@ -232,12 +217,12 @@ void vServoTask(void* pvParameters){
 
         vTaskDelay(100);
 
-        if( xQueueReceive( xQueueTuioData, (void*) pxTuioData, 10) ){
+        if( xQueueReceive( xQueueTuioData, (void*) puxTuioData, 10) ){
 
             LED_Toggle(0);
 
-            fPosX = *(float *)&pxTuioData[2]; 	//range 0...1
-            fPosY = *(float *)&pxTuioData[3]; 	//range 0...1
+            fPosX = *(float *)&puxTuioData[2]; 	//range 0...1
+            fPosY = *(float *)&puxTuioData[3]; 	//range 0...1
 
             sPosX = (portSHORT) ( fPosX * 12.0f ); //range 0...12
             sPosY = (portSHORT) ( fPosY * 10.0f ); //range 0...10
@@ -250,11 +235,11 @@ void vServoTask(void* pvParameters){
 
             vImposeServoLimits( sPan, sTilt );
 
-            vLogPrintf("[vServoTask] %dx, %dy, %dp, %dt\r\n", sPosX, sPosY, sPan, sTilt);
+            vLogPrintf("[vServoTask] %2dx, %2dy, %3dp, %3dt\r\n", sPosX, sPosY, sPan, sTilt);
         
-            debug_printf("[vServoTask] %dx, %dy, %dp, %dt\r\n", sPosX, sPosY, sPan, sTilt);
+            debug_printf("[vServoTask] %2dx, %2dy, %3dp, %3dt\r\n", sPosX, sPosY, sPan, sTilt);
 
-            vLogSync();
+            f_sync(&Fil);
         }
 
     }
@@ -264,7 +249,8 @@ void vServoTask(void* pvParameters){
 /* Pushbutton Input Task */
 void vPBTask(void *pvParameters) {
 
-    int i;
+    portBASE_TYPE xCount;
+
     portENTER_CRITICAL();
     //Call vPassPBSemaphore (pbISR.c)
     vPassPBSemaphore(xPBSemaphore);
@@ -273,7 +259,6 @@ void vPBTask(void *pvParameters) {
     AT91C_BASE_PIOA->PIO_ISR; 
     AT91C_BASE_PIOA->PIO_IDR = 0xFFFFFFFF;
     AIC_ConfigureIT(AT91C_ID_PIOA, AT91C_AIC_PRIOR_LOWEST, vPBISR_Wrapper);
-    //Manually set your PIO IER register
     AT91C_BASE_PIOA->PIO_IER = PIN_SET[0].mask;
     AIC_EnableIT(AT91C_ID_PIOA);
     portEXIT_CRITICAL();
@@ -286,9 +271,9 @@ void vPBTask(void *pvParameters) {
 
             debug_printf("[vPBTask] xPBSemaphore Taken\r\n");
 
-            for(i = 0; i < 20; i++){
+            for(xCount = 0; xCount < 20; xCount++){
 
-                i % 2 ? PIO_Clear(pPinLaser) : PIO_Set(pPinLaser);
+                xCount % 2 ? PIO_Clear(pPinLaser) : PIO_Set(pPinLaser);
 
                 vTaskDelay(50);
             }
@@ -297,63 +282,116 @@ void vPBTask(void *pvParameters) {
         vTaskDelay(100);
     }
 }
-/*-----------------------------------------------------------*/
-/* CLI Echo Function */
-static portBASE_TYPE prvTaskUsageCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString ) {
-	
-	long lParam_len; 
-	const char *cCmd_string;
+static portBASE_TYPE prvUsageCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr ){
 
-	//Get parameters from command string
-	cCmd_string = FreeRTOS_CLIGetParameter(pcCommandString, 1, &lParam_len);
+    portCHAR* pcBuf;
 
-	//Write command echo output string to write buffer.
-	xWriteBufferLen = sprintf(pcWriteBuffer, "\n\r%s\n\r", cCmd_string);
-	
-	return pdTRUE;
+    vTaskList( pcMainBuff );
+
+    pcBuf = pcMainBuff;
+
+    vUSBSendByte('\r');
+    vUSBSendByte('\n');
+
+    while( *pcBuf != (portLONG) NULL )
+        vUSBSendByte(*pcBuf++);
+    
+    return pdFALSE;
 }
 
-/*-----------------------------------------------------------*/
-/* CLI Test Function */
-static portBASE_TYPE prvTailCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString ) {
- 
-	xWriteBufferLen = sprintf(pcWriteBuffer, "\n\rTested..\n\r");
-	
-	return pdTRUE;
+static portBASE_TYPE prvTailCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr ){
+
+    FRESULT rc;				/* Result code */
+    FILINFO fno;			/* File information object */
+    portBASE_TYPE xOffset, xCount, xBytesToRead, xBytesRead;
+
+    vUSBSendByte('\r');
+    vUSBSendByte('\n');
+
+    xOffset = f_tell(&Fil) - ( 10 * xLogLineSize);
+
+    if( xOffset < 0 )
+        xOffset = 0;
+
+    xBytesToRead = f_tell(&Fil) - xOffset;
+
+    (void) f_lseek(&Fil, xOffset );
+
+    while ( xBytesToRead > 0 ) {
+
+        /* Read a chunk of file */
+        (void) f_read(&Fil, pcMainBuff, MIN(xBytesToRead,xMainBuffSize), (UINT*) &xBytesRead);
+
+        for ( xCount = 0; xCount < xBytesRead; xCount++)
+            vUSBSendByte(pcMainBuff[xCount]);
+
+        xBytesToRead -= xBytesRead;
+    }
+
+    return pdFALSE;
 }
 
-/*-----------------------------------------------------------*/
-/* CLI Test Function */
-static portBASE_TYPE prvListCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString ) {
- 
-	xWriteBufferLen = sprintf(pcWriteBuffer, "\n\rTested..\n\r");
-	
-	return pdTRUE;
-}
+static portBASE_TYPE prvListCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr ){
 
-/* CLI Test Function */
-static portBASE_TYPE prvLaserCommand(int8_t *pcWriteBuffer, size_t xWriteBufferLen, const int8_t *pcCommandString ) {
- 
-        long lParamLen; 
-	const char* pcCmdString;
+    FRESULT rc;				/* Result code */
+    FILINFO fno;			/* File information object */
+    DIR dir;				/* Directory object */
+    portBASE_TYPE xTotalSize = 0;
 
-	//Get parameters from command string
-	pcCmdString = FreeRTOS_CLIGetParameter(pcCommandString, 1, &lParamLen);
+    vUSBSendByte('\r');
+    vUSBSendByte('\n');
 
-        if ( strcmp(pcCmdString, "on") == 0 ){
-            // Turn Laser on
-            PIO_Set(pPinLaser);
+    rc = f_opendir(&dir, "");
+
+    debug_printf("     Size  Name\r\n");
+
+    for (;;) {
+
+        rc = f_readdir(&dir, &fno);		/* Read a directory item */
+
+        if (rc || !fno.fname[0]) break;	/* Error or end of dir */
+
+        if (fno.fattrib & AM_DIR){
+
+            debug_printf("    <dir>  %s\r\n", fno.fname);
+
         }else{
-            // Turn Laser off
-            PIO_Clear(pPinLaser);
-        }
-	
-	xWriteBufferLen = sprintf(pcWriteBuffer, "\r\nLaser [%s]\r\n", pcCmdString);
 
-	return pdTRUE;
+            debug_printf("%8luB  %s\r\n", fno.fsize, fno.fname);
+
+            xTotalSize += fno.fsize;
+
+        }
+    }
+    
+    debug_printf("total ~%dKB\r\n", xTotalSize/1024);
+
+    return pdFALSE;
 }
-/*-----------------------------------------------------------*/
-/* USB CLI receive task */
+
+ 
+static portBASE_TYPE prvLaserCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t *pcCMDStr ){
+
+    unsigned portBASE_TYPE uxParamLen; 
+    const char* pcParamString;
+
+    vUSBSendByte('\r');
+    vUSBSendByte('\n');
+
+    //Get parameters from command string
+    pcParamString = FreeRTOS_CLIGetParameter(pcCMDStr, 1, &uxParamLen);
+
+    if ( strcmp(pcParamString, "on") == 0 ){
+        // Turn Laser on
+        PIO_Set(pPinLaser);
+    }else{
+        // Turn Laser off
+        PIO_Clear(pPinLaser);
+    }
+
+    return pdFALSE;
+}
+
 void vCLI_ReceiveTask(void *pvParameters) {
 
     char cRxedChar;
@@ -363,7 +401,6 @@ void vCLI_ReceiveTask(void *pvParameters) {
     portBASE_TYPE xReturned;
 
     //Initialise pointer to CLI output buffer.
-    memset(cInputString, 0, sizeof(cInputString));
     pcOutputString = FreeRTOS_CLIGetOutputBuffer();
 
     for (;;) {
@@ -373,9 +410,6 @@ void vCLI_ReceiveTask(void *pvParameters) {
 
         if ( (cRxedChar != 0) && (cRxedChar != 5)) {
 
-            //reflect byte
-            vUSBSendByte(cRxedChar);
-
             //Process only if return is received.
             if (cRxedChar == '\r') {
 
@@ -383,13 +417,9 @@ void vCLI_ReceiveTask(void *pvParameters) {
                 cInputString[cInputIndex] = '\0';
 
                 //Process command input string.
-                xReturned = FreeRTOS_CLIProcessCommand( cInputString, pcOutputString, configCOMMAND_INT_MAX_OUTPUT_SIZE );
+                (void) FreeRTOS_CLIProcessCommand( cInputString, pcOutputString, 20 );
 
-                memset(cInputString, 0, sizeof(cInputString));
                 cInputIndex = 0;
-                
-                //Display CLI output string
-                debug_printf("%s\r\n",pcOutputString);
         
             } else if( cRxedChar == '\b' ) { 
 
@@ -409,6 +439,9 @@ void vCLI_ReceiveTask(void *pvParameters) {
                         cInputIndex++;
                 }
 
+                //reflect byte
+                vUSBSendByte(cRxedChar);
+
             }
         } 
 
@@ -418,34 +451,32 @@ void vCLI_ReceiveTask(void *pvParameters) {
 
 void vLogOpen( void ) {
 
-    FRESULT error;         /* Result code */
     portCHAR pcLogName[14];
-    unsigned portCHAR ucVersion = 1;
+    portBASE_TYPE xVersion = 1;
 
     f_mount(0, &Fatfs);		/* Register volume work area (never fails) */
 
     for ( ; ; ) {
 
-        sprintf(pcLogName, "6342_V%d.TXT", ucVersion++); 
+        sprintf(pcLogName, "6342_V%d.TXT", xVersion++); 
 
-        /* returns FR_EXIST if file already exists */ 
-        error = f_open(&Fil, pcLogName, FA_WRITE | FA_CREATE_NEW);
+        if ( f_open(&Fil, pcLogName, FA_READ | FA_WRITE | FA_CREATE_NEW ) )
+            continue;
         
-        if( error == 0 ) break;
-
+        break;
     }
 
-    vLogSync();
+    f_sync(&Fil);
 }
 
 DWORD get_fattime (void)
 {
-	return	  ((DWORD)(2012 - 1980) << 25)	/* Year = 2012 */
-			| ((DWORD)1 << 21)	/* Month = 1 */
-			| ((DWORD)1 << 16)	/* Day_m = 1*/
-			| ((DWORD)0 << 11)	/* Hour = 0 */
-			| ((DWORD)0 << 5)	/* Min = 0 */
-			| ((DWORD)0 >> 1);	/* Sec = 0 */
+    return  ((DWORD)(2012 - 1980) << 25) /* Year = 2012 */
+            | ((DWORD)1 << 21)	         /* Month = 1 */
+            | ((DWORD)1 << 16)	         /* Day_m = 1*/
+            | ((DWORD)0 << 11)	         /* Hour = 0 */
+            | ((DWORD)0 << 5)	         /* Min = 0 */
+            | ((DWORD)0 >> 1);	         /* Sec = 0 */
 }
 
 /*-----------------------------------------------------------*/
@@ -471,13 +502,6 @@ void prvSetupHardware( void )
     LED_Configure(0);
 }
 
-/* may be useful*/
-void vApplicationTickHook( void ){
-    
-    return;
-}
-
-/*-----------------------------------------------------------*/
 /* Idle Application Task */
 void vApplicationIdleHook( void )
 {
@@ -488,11 +512,9 @@ void vApplicationIdleHook( void )
     {
         xLastTx = xTaskGetTickCount();
         LED_Toggle(0);
-
-        // Sync/Flush log data
-//        vLogSync();
     }
 }
+
 void vConfigurePWM(void)
 {
     // Enable PWMC peripheral clock
@@ -515,5 +537,3 @@ void vConfigurePWM(void)
     PWMC_EnableChannel(CHANNEL_PWM_SERVO2);
 
 }
-
-

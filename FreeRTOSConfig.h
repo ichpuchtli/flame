@@ -85,7 +85,7 @@
 interpreter.  Set this value to 1 to save RAM if FreeRTOS+CLI does not supply
 the output butter.  See the FreeRTOS+CLI documentation for more information:
 http://www.FreeRTOS.org/FreeRTOS-Plus/FreeRTOS_Plus_CLI/ */
-#define configCOMMAND_INT_MAX_OUTPUT_SIZE			20	//1024
+#define configCOMMAND_INT_MAX_OUTPUT_SIZE			64	//1024
 
 
 #define configUSE_PREEMPTION		1
