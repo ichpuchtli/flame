@@ -58,7 +58,7 @@
 
 
 #define xLogLineSize (30)
-#define xMainBuffSize (256L)
+#define xMainBuffSize (2024L)
 #define pPinLaser (&PIN_SET[3])
 #define RESET_CTRL { 1 << 30U, AT91C_BASE_PIOA, AT91C_ID_PIOA, PIO_OUTPUT_1,0}
 
@@ -90,6 +90,7 @@ void prvSetupHardware( void );
 void vApplicationIdleHook( void );
 void vConfigurePWM(void);
 
+portBASE_TYPE xGetDigits( portCHAR* pcStr);
 void vLogOpen(void);
 
 /* Task Prototypes */
@@ -159,10 +160,12 @@ static FIL Fil;        /* File object */
 
 static portCHAR pcMainBuff[xMainBuffSize]; 
 
+static portBASE_TYPE xUseReplay = 0;
+
 xSemaphoreHandle xPBSemaphore;
 xQueueHandle xQueueTuioData;
 xTaskHandle xServoTask;
-xTaskHandle xReplayTask = NULL;
+xTaskHandle xReplayTask;
 
 int main( void )
 {
@@ -219,6 +222,9 @@ void vReplayTask(void* pvParameters){
     FILINFO fno;			/* File information object */
     unsigned portBASE_TYPE xBytesRead, xLastTime, xNewTime, xPan, xTilt;
 
+    xPan = 125;
+    xTilt = 220;
+
     static portCHAR pcLineBuff[xLogLineSize+1];
    
     (void) f_lseek(&Fil, 0 /* Start of File */ );
@@ -229,30 +235,37 @@ void vReplayTask(void* pvParameters){
 
         for ( ; ; ) {
 
-            (void) f_read(&Fil, pcLineBuff, xLogLineSize, (UINT*) &xBytesRead);
+            rc = f_read(&Fil, pcLineBuff, xLogLineSize, (UINT*) &xBytesRead);
 
-            if( xBytesRead < xLogLineSize )
+            if( rc || (xBytesRead < xLogLineSize ) ){
+                debug_printf("ReplayTask EOF\r\n");
                 break;
+            }
 
             pcLineBuff[2] = '\0';  
             pcLineBuff[5] = '\0';  
             pcLineBuff[8] = '\0';  
 
-            xNewTime =  atol(pcLineBuff) * 60 * 60 + atol(pcLineBuff + 3) * 60 + atol(pcLineBuff + 6);
+            xNewTime =  xGetDigits(pcLineBuff) * 60 * 60 + xGetDigits(pcLineBuff + 3) * 60 + xGetDigits(pcLineBuff + 6);
 
-            vTaskDelay( xNewTime - xLastTime );
+            if ( xLastTime == 0 )
+                xLastTime = xNewTime;
+
+            vTaskDelay( (xNewTime - xLastTime)*1000 );
 
             xLastTime = xNewTime;
            
             pcLineBuff[22] = '\0';  
             pcLineBuff[27] = '\0';  
              
-            xPan = atol(pcLineBuff + 19);
-            xTilt = atol(pcLineBuff + 24);
+            xPan = xGetDigits(pcLineBuff + 19);
+            xTilt = xGetDigits(pcLineBuff + 24);
+
+            xPan++;
 
             vImposeServoLimits( xPan, xTilt );
 
-            debug_printf("[vReplayTask] %3dp %3dt\r\n", xPan, xTilt);
+            debug_printf("[vReplayTask] %ds %3dp %3dt\r\n", xNewTime, xPan, xTilt);
 
             PWMC_SetDutyCycle(CHANNEL_PWM_SERVO1, xPan);
             PWMC_SetDutyCycle(CHANNEL_PWM_SERVO2, xTilt);
@@ -262,12 +275,13 @@ void vReplayTask(void* pvParameters){
         }
 
         debug_printf("Resuming Servo Task...\r\n");
-        vTaskResume( xServoTask );
-
-        vTaskDelay(100);
+        //vTaskResume( xServoTask );
+        xUseReplay = 0;
 
         debug_printf("Suspendig Replay Task...\r\n");
-        vTaskSuspend( xReplayTask );
+        vTaskSuspend( NULL );
+
+        vTaskDelay(100);
 
     }
 }
@@ -285,17 +299,19 @@ void vServoTask(void* pvParameters){
     sPan = 125;
     sTilt = 220;
 
+    PWMC_SetDutyCycle(CHANNEL_PWM_SERVO1, sPan);
+    PWMC_SetDutyCycle(CHANNEL_PWM_SERVO2, sTilt);
+
     // Establish TCP Connection
     u16_t ripaddr[2];
     uip_ipaddr(&ripaddr,192,168,0,4);
     uip_connect(&ripaddr, htons(3000));
 
     for( ; ; ) {
- 
-        PWMC_SetDutyCycle(CHANNEL_PWM_SERVO1, sPan);
-        PWMC_SetDutyCycle(CHANNEL_PWM_SERVO2, sTilt);
 
         vTaskDelay(100);
+
+        if( xUseReplay ) continue;
 
         if( xQueueReceive( xQueueTuioData, (void*) puxTuioData, 10) ){
 
@@ -314,6 +330,9 @@ void vServoTask(void* pvParameters){
             sTilt += ( sPosY - 5 );
 
             vImposeServoLimits( sPan, sTilt );
+
+            PWMC_SetDutyCycle(CHANNEL_PWM_SERVO1, sPan);
+            PWMC_SetDutyCycle(CHANNEL_PWM_SERVO2, sTilt);
 
             vLogPrintf("%2dx %2dy %3dp %3dt\r\n", sPosX, sPosY, sPan, sTilt);
         
@@ -477,10 +496,12 @@ static portBASE_TYPE prvReplayCMD(int8_t *pcBuff, size_t xBuffLen, const int8_t 
     vUSBSendByte('\r');
     vUSBSendByte('\n');
 
-    //debug_printf("Suspendig Servo Task...\r\n");
-    vTaskSuspend( xServoTask );
 
-    //debug_printf("Resuming Replay Task...\r\n");
+    debug_printf("Suspendig Servo Task...\r\n");
+    //vTaskSuspend( xServoTask );
+    xUseReplay = 1;
+
+    debug_printf("Resuming Replay Task...\r\n");
     vTaskResume( xReplayTask );
 
     return pdFALSE;
@@ -632,3 +653,18 @@ void vConfigurePWM(void)
     PWMC_EnableChannel(CHANNEL_PWM_SERVO2);
 
 }
+
+portBASE_TYPE xGetDigits( portCHAR* pcStr){
+
+    portBASE_TYPE xValue = 0;
+
+    while ( isdigit( *pcStr ) ){
+
+        xValue *= 10;
+        xValue += (portBASE_TYPE) (*pcStr - '0');
+        pcStr++;
+    }
+
+    return xValue;
+}
+

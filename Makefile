@@ -65,6 +65,7 @@ PROGNAME = main
 
 CC=arm-none-eabi-gcc
 OBJCOPY=arm-none-eabi-objcopy
+SIZE=arm-none-eabi-size
 LDSCRIPT=$(NETDUINO_DIR)/atmel-rom.ld
 
 LINKER_FLAGS=-mthumb -nostartfiles -Xlinker -o$(PROGNAME).elf -Xlinker -M -Xlinker -Map=$(PROGNAME).map -static
@@ -150,6 +151,7 @@ all: $(PROGNAME).bin
 
 $(PROGNAME).bin : $(PROGNAME).hex
 	$(OBJCOPY) $(PROGNAME).elf -O binary $(PROGNAME).bin
+	arm-none-eabi-size -A -t $(PROGNAME).elf
 	 
 $(PROGNAME).hex : $(PROGNAME).elf
 	$(OBJCOPY) $(PROGNAME).elf -O ihex $(PROGNAME).hex
